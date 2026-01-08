@@ -1,0 +1,340 @@
+String idx = ctx._index != null ? ctx._index.toLowerCase() : null;
+if (idx == null) return;
+
+// Chỉ xử lý các index ưu tiên
+boolean hit = (
+    idx.contains('wazuh') ||
+    idx.contains('zeek') ||
+    idx.contains('suricata') ||
+    idx.contains('pfsense') ||
+    idx.contains('modsecurity') ||
+    idx.contains('apache') ||
+    idx.contains('nginx') ||
+    idx.contains('mysql') ||
+    idx.contains('windows') ||
+    idx.contains('logs-system.security')
+);
+
+if (!hit) return;
+
+// ========================= SURICATA =========================
+if (idx.contains('suricata')) {
+    String eventType = ctx.suricata?.eve?.event_type;
+
+    // Bỏ qua các event không quan trọng
+    if (
+        eventType == null ||
+        eventType == 'stats' ||
+        eventType == 'flow' ||
+        eventType == 'netflow' ||
+        eventType == 'fileinfo' ||
+        eventType == 'dns'
+    ) {
+        return;
+    }
+
+    // Suricata alert
+    if (eventType == 'alert' && ctx.rule?.name != null) {
+        ctx.ml_input =
+            'Suricata: ' + ctx.rule.name +
+            ' | Category: ' + (ctx.rule?.category ?: 'Unknown') +
+            ' | ' + (ctx.source?.ip ?: '-') +
+            ' -> ' + (ctx.destination?.ip ?: '-');
+    }
+
+    return;
+}
+
+// ========================= ZEEK =========================
+if (idx.contains('zeek')) {
+
+    // Only accept real alerts: must have event.kind = "alert"
+    String kind = ctx.event?.kind;
+    if (kind == null || kind != 'alert') return;
+
+    // Must have a Zeek notice (we ignore all non-notice datasets)
+    if (ctx.zeek?.notice == null) return;
+
+    // Must have both name + description (alert-level messages)
+    if (ctx.rule?.name != null && ctx.rule?.description != null) {
+        ctx.ml_input =
+            'Zeek: ' + ctx.rule.name +
+            ' | Description: ' + ctx.rule.description +
+            ' | Peer: ' + (ctx.zeek.notice.peer_descr ?: '-');
+        return;
+    }
+
+    // Fallback: use Zeek Notice message only when it's alert-level
+    if (ctx.zeek.notice.msg != null) {
+        ctx.ml_input = 'Zeek Notice: ' + ctx.zeek.notice.msg;
+        return;
+    }
+
+    return;
+}
+
+// ========================= PFSENSE =========================
+if (idx.contains('pfsense')) {
+
+    // Normalize action safely
+    String action = ctx.event?.action != null ? ctx.event.action.toLowerCase() : null;
+    if (action == null) return;
+
+    // Only accept block / reject
+    if (!(action == "block" || action == "reject")) return;
+
+    // Build ML input safely
+    ctx.ml_input =
+        "pfSense: " + action.toUpperCase() + " " +
+        (ctx.source?.ip ?: "-") + ":" + (ctx.source?.port ?: "-") +
+        " -> " +
+        (ctx.destination?.ip ?: "-") + ":" + (ctx.destination?.port ?: "-") +
+        " | Proto: " + (ctx.network?.transport ?: "-");
+
+    return;
+}
+
+// ========================= WAZUH =========================
+if (idx.contains('wazuh') && ctx.rule?.description != null) {
+    String level = String.valueOf(ctx.rule?.level ?: '');
+    String agent = ctx.agent?.name ?: '-';
+    ctx.ml_input = 'Wazuh Alert [Level ' + level + ']: ' + ctx.rule.description + ' | Agent: ' + agent;
+    return;
+}
+
+// Fallback cho logs khác có full_log
+if (ctx.rule?.description != null && ctx.full_log != null) {
+    ctx.ml_input = 'Alert: ' + ctx.rule.description + ' | Log: ' + ctx.full_log;
+    return;
+}
+
+// ========================= APACHE =========================
+if (idx.contains('apache')) {
+
+    String level = ctx.log?.level;
+    String msg = ctx.message;
+
+    // Only keep real errors or alerts
+    boolean isAlert =
+        (level != null && (
+            level == 'error' ||
+            level == 'crit' ||
+            level == 'alert' ||
+            level == 'emerg' ||
+            level == 'warning'
+        )) ||
+        (msg != null && (
+            msg.toLowerCase().contains("error") ||
+            msg.toLowerCase().contains("failed") ||
+            msg.toLowerCase().contains("attack") ||
+            msg.toLowerCase().contains("denied") ||
+            msg.toLowerCase().contains("modsecurity")
+        ));
+
+    if (!isAlert) return; // skip normal apache logs
+
+    ctx.ml_input =
+        "Apache: " + (msg ?: "-") +
+        " | Level: " + (level ?: "-") +
+        " | Host: " + (ctx.host?.hostname ?: "-");
+
+    return;
+}
+
+// ========================= MYSQL =========================
+if (idx.contains('mysql')) {
+    String msg = ctx.message;
+    String level = ctx.log?.level;
+
+    // Only process MySQL warnings
+    if (level == null || level != 'Warning') return;
+
+    ctx.ml_input =
+        "MySQL: " + (ctx.message ?: "-");
+
+    return;
+}
+
+
+// ========================= NGINX =========================
+if (idx.contains("nginx")) {
+
+    String level = ctx.log?.level ?: "";
+    String msg = ctx.message ?: "";
+
+    // Skip everything if level = notice (too noisy)
+    if (level == "notice") return;
+
+    // Skip startup/version messages
+    if (
+        msg.contains("version") ||
+        msg.contains("loaded") ||
+        msg.contains("built") ||
+        msg.contains("using")
+    ) return;
+
+    // If got here → it's a real error
+    ctx.ml_input =
+        "Nginx: " + msg;
+
+    return;
+}
+
+
+
+// ========================= FIREWALL KHÁC =========================
+if (ctx.observer?.type == 'firewall' && ctx.event?.action != null) {
+    ctx.ml_input =
+        'Firewall ' + ctx.event.action + ': ' +
+        (ctx.source?.ip ?: '-') + ':' + (ctx.source?.port ?: '-') +
+        ' -> ' +
+        (ctx.destination?.ip ?: '-') + ':' + (ctx.destination?.port ?: '-');
+    return;
+}
+
+// ========================= WINDOWS SYSTEM SECURITY (.ds-logs-system.security) =========================
+if (idx.contains('logs-system.security')) {
+
+    String eventCode = ctx.event?.code != null ? ctx.event.code.toString() : null;
+    String action = ctx.event?.action;
+    String provider = ctx.winlog?.provider_name ?: ctx.event?.provider;
+    String msg = ctx.message;
+    String userName = ctx.user?.name ?: ctx.winlog?.event_data?.TargetUserName;
+    String domain = ctx.user?.domain ?: ctx.winlog?.event_data?.TargetDomainName;
+    String sourceIp = ctx.source?.ip;
+    String logonType = ctx.winlog?.event_data?.LogonType;
+    def keywordsList = ctx.winlog?.keywords;
+    String keywords = (keywordsList != null && keywordsList.size() > 0) ? keywordsList[0].toString() : null;
+
+    // Security event codes to monitor
+    // 4624 - Successful logon
+    // 4625 - Failed logon 
+    // 4627 - Group membership
+    // 4634 - Logoff
+    // 4672 - Special privileges assigned
+    // 4648 - Explicit credential logon
+    // 4688 - Process creation
+    // 4720 - User account created
+    // 4722 - User account enabled
+    // 4723 - Password change attempt
+    // 4724 - Password reset attempt
+    // 4725 - User account disabled
+    // 4726 - User account deleted
+    // 4740 - Account locked out
+    // 4768 - Kerberos TGT requested
+    // 4769 - Kerberos service ticket requested
+    // 4776 - NTLM authentication
+    
+    // Filter for important security events
+    boolean isSecurityEvent = (
+        eventCode == '4624' ||  // Successful logon
+        eventCode == '4625' ||  // Failed logon
+        eventCode == '4627' ||  // Group membership info
+        eventCode == '4634' ||  // Logoff
+        eventCode == '4672' ||  // Special privileges
+        eventCode == '4648' ||  // Explicit credential logon
+        eventCode == '4688' ||  // Process creation
+        eventCode == '4720' ||  // User created
+        eventCode == '4722' ||  // User enabled
+        eventCode == '4723' ||  // Password change
+        eventCode == '4724' ||  // Password reset
+        eventCode == '4725' ||  // User disabled
+        eventCode == '4726' ||  // User deleted
+        eventCode == '4740' ||  // Account lockout
+        eventCode == '4768' ||  // Kerberos TGT
+        eventCode == '4769' ||  // Kerberos service ticket
+        eventCode == '4776'     // NTLM auth
+    );
+
+    // Also check for Audit Failure (potential attack indicators)
+    boolean isAuditFailure = (keywords != null && keywords.contains('Failure'));
+
+    if (!isSecurityEvent && !isAuditFailure) return;
+
+    String msgPart = '-';
+    if (msg != null) {
+        int len = msg.length();
+        msgPart = msg.substring(0, len > 500 ? 500 : len);
+    }
+    ctx.ml_input =
+        'Windows Security: EventCode=' + (eventCode ?: '-') +
+        ' | Action: ' + (action ?: '-') +
+        ' | Provider: ' + (provider ?: '-') +
+        ' | User: ' + (userName ?: '-') +
+        ' | Domain: ' + (domain ?: '-') +
+        (sourceIp != null ? ' | SourceIP: ' + sourceIp : '') +
+        (logonType != null ? ' | LogonType: ' + logonType : '') +
+        ' | Message: ' + msgPart;
+
+    return;
+}
+
+// ========================= WINDOWS DEFENDER/GENERIC =========================
+if (idx.contains('windows')) {
+
+    // Only keep security alerts
+    String level = ctx.log?.level;
+    String kind = ctx.event?.kind;
+    String action = ctx.event?.action;
+    String msg = ctx.message;
+
+    // 1. Must be alert-level or contain detection keywords
+    boolean isAlert =
+        (kind != null && kind == 'alert') ||
+        (level != null && (level == 'warning' || level == 'error' || level == 'critical')) ||
+        (msg != null && (
+            msg.contains('detect') ||
+            msg.contains('malware') ||
+            msg.contains('threat') ||
+            msg.contains('blocked') ||
+            msg.contains('quarantine') ||
+            msg.contains('virus')
+        )) ||
+        (action != null && (
+            action.contains('Detected') ||
+            action.contains('Blocked') ||
+            action.contains('Quarantined')
+        ));
+
+    if (!isAlert) {
+        // skip noisy Windows logs
+        return;
+    }
+
+    // Build ML input
+    ctx.ml_input =
+        'Windows: ' +
+        (ctx.event?.code ?: '-') +
+        ' | Provider: ' + (ctx.event?.provider ?: '-') +
+        ' | Message: ' + (msg ?: '-');
+
+    return;
+}
+
+// ========================= MODSECURITY =========================
+if (idx.contains('modsecurity')) {
+
+    // must have ModSecurity messages (real alerts)
+    if (ctx.modsec?.audit?.messages == null || ctx.modsec.audit.messages.size() == 0) return;
+
+    // must have a query string, otherwise skip (not an attack payload)
+    String query = ctx.url?.query;
+    if (query == null || query.trim().length() == 0) return;
+
+    // build message list
+    String msgs = String.join("; ", ctx.modsec.audit.messages);
+
+    ctx.ml_input =
+        "ModSecurity: " + msgs +
+        " | URL: " + (ctx.url?.original ?: "-") +
+        " | Query: " + query +
+        " | SourceIP: " + (ctx.source?.ip ?: "-") +
+        " | SourcePort: " + (ctx.source?.port ?: "-");
+
+    return;
+}
+
+// Generic fallback: use original event/message if nothing matched
+if (ctx.event?.original != null || ctx.message != null) {
+    ctx.ml_input = ctx.event?.original ?: ctx.message;
+}

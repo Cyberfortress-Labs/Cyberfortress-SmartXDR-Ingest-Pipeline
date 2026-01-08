@@ -1,0 +1,27 @@
+POST _ml/trained_models/byviz__bylastic_classification_logs/deployment/_start
+{
+  "number_of_allocations": 1,
+  "threads_per_allocation": 4,
+  "queue_capacity": 10000
+}
+
+
+GET _ml/trained_models/byviz__bylastic_classification_logs
+
+GET _ml/trained_models/byviz__bylastic_classification_logs/_stats
+
+
+POST _ingest/pipeline/bylastic-log-classifier/_simulate
+{
+  "docs": [
+
+  ]
+}
+
+DELETE _index_template/ai_log_classification_template
+DELETE /_data_stream/wazuh-alerts-4.x-2025.11.26
+GET _index_template?pretty
+GET _index_template
+DELETE _index_template/ai_log_classification_template
+
+

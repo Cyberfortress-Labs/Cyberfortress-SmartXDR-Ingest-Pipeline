@@ -1,0 +1,38 @@
+{
+  "description": "SmartXDR Log Classification Pipeline",
+  "processors": [
+    {
+      "script": {
+        "lang": "painless",
+        "source": "String idx = ctx._index != null ? ctx._index.toLowerCase() : null;\r if (idx == null) return;\r \r boolean hit = (\r     idx.contains('wazuh') ||\r     idx.contains('zeek') ||\r     idx.contains('suricata') ||\r     idx.contains('pfsense') ||\r     idx.contains('modsecurity') ||\r     idx.contains('apache') ||\r     idx.contains('nginx') ||\r     idx.contains('mysql') ||\r     idx.contains('windows')\r );\r \r if (!hit) return;\r\r if (idx.contains('wazuh') && ctx.rule?.description != null) {\r     String level = String.valueOf(ctx.rule?.level ?: '');\r     String agent = ctx.agent?.name ?: '-';\r     ctx.ml_input = 'Wazuh Alert [Level ' + level + ']: ' + ctx.rule.description + ' | Agent: ' + agent;\r     return;\r }\r \r if (idx.contains('suricata')) {\r     String eventType = ctx.suricata?.eve?.event_type;\r     if (\r         eventType == null ||\r         eventType == 'stats' ||\r         eventType == 'flow' ||\r         eventType == 'netflow' ||\r         eventType == 'fileinfo' ||\r         eventType == 'dns'\r     ) {\r         return;\r     }\r     if (eventType == 'alert' && ctx.rule?.name != null) {\r         ctx.ml_input =\r             'Suricata Alert: ' + ctx.rule.name +\r             ' | Category: ' + (ctx.rule?.category ?: 'Unknown') +\r             ' | ' + (ctx.source?.ip ?: '-') +\r             ' -> ' + (ctx.destination?.ip ?: '-');\r     }\r     return;\r }\r\r if (idx.contains('zeek')) {\r     String kind = ctx.event?.kind;\r     if (kind == null || kind != 'alert') return;\r     if (ctx.zeek?.notice == null) return;\r     if (ctx.rule?.name != null && ctx.rule?.description != null) {\r         ctx.ml_input =\r             'Zeek Alert: ' + ctx.rule.name +\r             ' | Description: ' + ctx.rule.description +\r             ' | Peer: ' + (ctx.zeek.notice.peer_descr ?: '-');\r         return;\r     }\r     if (ctx.zeek.notice.msg != null) {\r         ctx.ml_input = 'Zeek Notice: ' + ctx.zeek.notice.msg;\r         return;\r     }\r     return;\r }\r\r if (idx.contains('pfsense')) {\r     String action = ctx.event?.action != null ? ctx.event.action.toLowerCase() : null;\r     if (action == null) return;\r     if (!(action == 'block' || action == 'reject')) return;\r     ctx.ml_input =\r         'pfSense: ' + action.toUpperCase() + ' ' +\r         (ctx.source?.ip ?: '-') + ':' + (ctx.source?.port ?: '-') +\r         ' -> ' +\r         (ctx.destination?.ip ?: '-') + ':' + (ctx.destination?.port ?: '-') +\r         ' | Proto: ' + (ctx.network?.transport ?: '-');\r     return;\r }\r\r if (ctx.rule?.description != null && ctx.full_log != null) {\r     ctx.ml_input = 'Alert: ' + ctx.rule.description + ' | Log: ' + ctx.full_log;\r     return;\r }\r\r if (idx.contains('apache')) {\r     String level = ctx.log?.level;\r     String msg = ctx.message;\r     boolean isAlert =\r         (level != null && (\r             level == 'error' || level == 'crit' || level == 'alert' || level == 'emerg' || level == 'warning'\r         )) ||\r         (msg != null && (\r             msg.toLowerCase().contains('error') ||\r             msg.toLowerCase().contains('failed') ||\r             msg.toLowerCase().contains('attack') ||\r             msg.toLowerCase().contains('denied') ||\r             msg.toLowerCase().contains('modsecurity')\r         ));\r     if (!isAlert) return;\r     ctx.ml_input = 'Apache Alert: ' + (msg ?: '-') + ' | Level: ' + (level ?: '-') + ' | Host: ' + (ctx.host?.hostname ?: '-');\r     return;\r }\r\r if (idx.contains('mysql')) {\r     String msg = ctx.message;\r     String level = ctx.log?.level;\r     if (level == null || level != 'Warning') return;\r     ctx.ml_input = 'MySQL Warning: ' + (ctx.message ?: '-') + ' | Level: ' + level;\r     return;\r }\r\r if (idx.contains('nginx')) {\r     String level = ctx.log?.level ?: '';\r     String msg = ctx.message ?: '';\r     if (level == 'notice') return;\r     if (msg.contains('version') || msg.contains('loaded') || msg.contains('built') || msg.contains('using')) return;\r     ctx.ml_input = 'Nginx Error: ' + msg + ' | Level: ' + level;\r     return;\r }\r\r if (ctx.observer?.type == 'firewall' && ctx.event?.action != null) {\r     ctx.ml_input = 'Firewall ' + ctx.event.action + ': ' + (ctx.source?.ip ?: '-') + ':' + (ctx.source?.port ?: '-') + ' -> ' + (ctx.destination?.ip ?: '-') + ':' + (ctx.destination?.port ?: '-');\r     return;\r }\r\r if (idx.contains('windows')) {\r     String level = ctx.log?.level;\r     String kind = ctx.event?.kind;\r     String action = ctx.event?.action;\r     String msg = ctx.message;\r     boolean isAlert =\r         (kind != null && kind == 'alert') ||\r         (level != null && (level == 'warning' || level == 'error' || level == 'critical')) ||\r         (msg != null && (\r             msg.contains('detect') || msg.contains('malware') || msg.contains('threat') || msg.contains('blocked') || msg.contains('quarantine') || msg.contains('virus')\r         )) ||\r         (action != null && (\r             action.contains('Detected') || action.contains('Blocked') || action.contains('Quarantined')\r         ));\r     if (!isAlert) return;\r     ctx.ml_input = 'Windows Alert: ' + (ctx.event?.code ?: '-') + ' | Provider: ' + (ctx.event?.provider ?: '-') + ' | Message: ' + (msg ?: '-');\r     return;\r }\r\r if (idx.contains('modsecurity')) {\r     if (ctx.modsec?.audit?.messages == null || ctx.modsec.audit.messages.size() == 0) return;\r     String query = ctx.url?.query;\r     if (query == null || query.trim().length() == 0) return;\r     String msgs = String.join('; ', ctx.modsec.audit.messages);\r     ctx.ml_input = 'ModSecurity Alert: ' + msgs + ' | URL: ' + (ctx.url?.original ?: '-') + ' | Query: ' + query + ' | SourceIP: ' + (ctx.source?.ip ?: '-') + ' | SourcePort: ' + (ctx.source?.port ?: '-');\r     return;\r }\r\r if (ctx.event?.original != null || ctx.message != null) {\r     ctx.ml_input = ctx.event?.original ?: ctx.message;\r }",
+        "ignore_failure": true
+      }
+    },
+    {
+      "inference": {
+        "model_id": "byviz__bylastic_classification_logs",
+        "target_field": "ml.prediction",
+        "field_map": {
+          "ml_input": "text_field"
+        },
+        "inference_config": {
+          "text_classification": {
+            "num_top_classes": 1
+          }
+        },
+        "if": "ctx.ml_input != null && ctx.ml_input instanceof String && ctx.ml_input.length() > 0 && ctx.ml_input.length() <= 5000",
+        "on_failure": [
+          {
+            "append": {
+              "field": "tags",
+              "value": [
+                "_ml_inference_failure"
+              ],
+              "allow_duplicates": false
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
