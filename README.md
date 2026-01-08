@@ -130,7 +130,7 @@ elasticsearch_ingest/
 ├── README.md                              # This document
 ├── pipelines/
 │   └── smartxdr-ingest-pipeline.json      # Pipeline definition
-├── scripts/
+├── src/
 │   └── smartxdr-log-classifier.painless   # Painless script
 └── config-model.http                      # Sample HTTP requests
 ```
