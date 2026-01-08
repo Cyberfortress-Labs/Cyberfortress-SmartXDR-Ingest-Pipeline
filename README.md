@@ -1,4 +1,4 @@
-# SmartXDR Ingest Pipeline
+# Cyberfortress SmartXDR Ingest Pipeline
 
 Automatic log classification system using Machine Learning on Elasticsearch.
 
